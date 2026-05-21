@@ -35,6 +35,7 @@ try {
     fail('Не удалось инициализировать ApiClient: ' . $e->getMessage());
 }
 
+out('Auth mode: ' . $api->getAuthMode());
 out('== Diadoc live org checks ==');
 
 try {
@@ -44,31 +45,63 @@ try {
 }
 
 $orgItems = $organizations->getOrganizations();
-$orgCount = is_array($orgItems) ? count($orgItems) : 0;
+$orgCount = $orgItems !== null ? $orgItems->count() : 0;
 out('Organizations count: ' . $orgCount);
+
+$orgId = null;
+$orgIdFromEnv = getenv(ConfigNames::ORG_ID);
+$orgIdFromEnv = is_string($orgIdFromEnv) ? trim($orgIdFromEnv) : '';
+
 if ($orgCount === 0) {
-    fail('Для текущего токена не найдено организаций в этой среде (DIADOC_URL).');
-}
+    out('WARN: GetMyOrganizations вернул пустой список.');
+    out('      Для логин/пароля (authenticate_v3) без КЭП API часто не отдаёт организации,');
+    out('      хотя запросы по boxId (как V3/GetDocuments в Postman) работают.');
 
-out('Available organizations:');
-foreach ($orgItems as $org) {
-    $name = method_exists($org, 'getFullName') ? (string) $org->getFullName() : '';
-    $inn = method_exists($org, 'getInn') ? (string) $org->getInn() : '';
-    $orgId = method_exists($org, 'getOrgId') ? (string) $org->getOrgId() : '';
-    out('- ' . $orgId . ' | ' . $inn . ' | ' . $name);
-}
-
-$orgId = getenv(ConfigNames::ORG_ID);
-if (!is_string($orgId) || trim($orgId) === '') {
-    $first = reset($orgItems);
-    if ($first && method_exists($first, 'getOrgId')) {
-        $orgId = (string) $first->getOrgId();
-        out('ORG_ID не задан, используется первый доступный orgId: ' . $orgId);
+    if ($orgIdFromEnv !== '') {
+        out('      Продолжаем с ORG_ID из .env: ' . $orgIdFromEnv);
+        $orgId = $orgIdFromEnv;
     } else {
-        fail('ORG_ID не задан и не удалось взять первый orgId.');
+        $boxId = getenv(ConfigNames::FROM_BOX_ID);
+        $boxId = is_string($boxId) ? trim($boxId) : '';
+        if ($boxId !== '') {
+            try {
+                $api->getBox($boxId);
+                out('getBox(FROM_BOX_ID): OK — токен и ящик доступны.');
+            } catch (\Throwable $e) {
+                fail('getBox(FROM_BOX_ID) завершился ошибкой: ' . $e->getMessage());
+            }
+        }
+        fail(
+            'GetMyOrganizations пустой: задайте ORG_ID в .env '
+            . '(OrgId организации, не путать с boxId для GetDocuments).'
+        );
+    }
+} else {
+    out('Available organizations:');
+    foreach ($orgItems as $org) {
+        $name = method_exists($org, 'getFullName') ? (string) $org->getFullName() : '';
+        $inn = method_exists($org, 'getInn') ? (string) $org->getInn() : '';
+        $listedOrgId = method_exists($org, 'getOrgId') ? (string) $org->getOrgId() : '';
+        out('- ' . $listedOrgId . ' | ' . $inn . ' | ' . $name);
+    }
+
+    if ($orgIdFromEnv !== '') {
+        $orgId = $orgIdFromEnv;
+        out('ORG_ID из .env: ' . $orgId);
+    } else {
+        $first = null;
+        foreach ($orgItems as $org) {
+            $first = $org;
+            break;
+        }
+        if ($first && method_exists($first, 'getOrgId')) {
+            $orgId = (string) $first->getOrgId();
+            out('ORG_ID не задан, используется первый доступный orgId: ' . $orgId);
+        } else {
+            fail('ORG_ID не задан и не удалось взять первый orgId.');
+        }
     }
 }
-$orgId = trim((string) $orgId);
 
 out('Selected ORG_ID: ' . $orgId);
 

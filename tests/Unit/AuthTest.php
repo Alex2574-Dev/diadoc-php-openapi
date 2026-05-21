@@ -11,6 +11,70 @@ use Test\enums\ConfigNames;
 
 class AuthTest extends BaseTest
 {
+    public function testDefaultAuthModeIsOidc(): void
+    {
+        $api = new DiadocApi('client', 'secret', 'https://diadoc-api.kontur.ru/');
+        self::assertSame(DiadocApi::AUTH_MODE_OIDC, $api->getAuthMode());
+    }
+
+    public function testSetAuthModeAuthenticateV3(): void
+    {
+        $api = new DiadocApi('dd-client', '', 'https://diadoc-api-test.kontur.ru/');
+        $api->setAuthMode(DiadocApi::AUTH_MODE_AUTHENTICATE_V3);
+        self::assertSame(DiadocApi::AUTH_MODE_AUTHENTICATE_V3, $api->getAuthMode());
+    }
+
+    public function testSetLegacyTokenRequiresAuthenticateV3Mode(): void
+    {
+        $api = new DiadocApi('dd-client', '', 'https://diadoc-api-test.kontur.ru/');
+        $this->expectException(DiadocApiException::class);
+        $api->setLegacyToken('token-value');
+    }
+
+    public function testSetLegacyTokenInAuthenticateV3Mode(): void
+    {
+        $api = new DiadocApi('dd-client', '', 'https://diadoc-api-test.kontur.ru/');
+        $api->setAuthMode(DiadocApi::AUTH_MODE_AUTHENTICATE_V3);
+        $api->setLegacyToken('legacy-token');
+        self::assertSame('legacy-token', $api->getToken());
+        self::assertSame(DiadocApi::AUTH_MODE_AUTHENTICATE_V3, $api->getAuthMode());
+    }
+
+    public function testAuthenticateLoginV3ThrowsInOidcMode(): void
+    {
+        $api = new DiadocApi('client', 'secret', 'https://diadoc-api.kontur.ru/');
+        $this->expectException(DiadocApiException::class);
+        $api->authenticateLoginV3('user', 'pass');
+    }
+
+    public function testSetAuthModeInvalidValueThrows(): void
+    {
+        $api = new DiadocApi('client', 'secret', 'https://diadoc-api.kontur.ru/');
+        $this->expectException(DiadocApiException::class);
+        $api->setAuthMode('unknown_mode');
+    }
+
+    public function testAuthenticateLoginV3WithRealCredentials(): void
+    {
+        $ddAuth = getenv(ConfigNames::DD_AUTH);
+        $login = getenv(ConfigNames::AUTH_LOGIN);
+        $password = getenv(ConfigNames::AUTH_PASSWORD);
+        if ($ddAuth === false || $ddAuth === '' || $login === false || $login === '' || $password === false || $password === '') {
+            self::markTestSkipped('Нужны DD_AUTH, AUTH_LOGIN и AUTH_PASSWORD в .env для /V3/Authenticate');
+        }
+
+        $diadocUrl = getenv(ConfigNames::DIADOC_URL);
+        $api = new DiadocApi(
+            $ddAuth,
+            '',
+            $diadocUrl !== false && $diadocUrl !== '' ? $diadocUrl : 'https://diadoc-api-test.kontur.ru/'
+        );
+        $api->setAuthMode(DiadocApi::AUTH_MODE_AUTHENTICATE_V3);
+        $token = $api->authenticateLoginV3($login, $password);
+        self::assertNotSame('', $token);
+        self::assertSame($token, $api->getToken());
+    }
+
     public function testBuildAuthorizationUrlUsesStagingScopeForStagingHost(): void
     {
         $api = new DiadocApi('my-client', 'my-secret', 'https://diadoc-api-staging.kontur.ru/');

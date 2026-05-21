@@ -7,7 +7,8 @@ PHP-библиотека для работы с API Диадок (protobuf + HTT
 За основу взят модуль [`magdv/diadoc-php`](https://github.com/magdv/diadoc-php).  
 В рамках этого репозитория выполнены ключевые доработки:
 
-- перевод авторизации на OpenID Connect (Authorization Code Flow) вместо устаревшего `DiadocAuth`/`/Authenticate`;
+- перевод авторизации на OpenID Connect (Authorization Code Flow) как основной путь;
+- опциональный legacy-режим `authenticate_v3` (`POST /V3/Authenticate`, `DiadocAuth`) для сред без OIDC;
 - добавлен `Bearer`-заголовок и обработка жизненного цикла `access_token`/`refresh_token`;
 - добавлено проактивное и реактивное обновление токена (refresh);
 - обновлены примеры, тестовая обвязка и конфигурация окружения;
@@ -66,12 +67,41 @@ $orgList = $api->getMyOrganizations();
 echo $orgList->getOrganizations()[0]->getOrgId();
 ```
 
+## Выбор способа авторизации
+
+Переключение через `.env`, без правок кода потребителя:
+
+| `DIADOC_AUTH_MODE` | Заголовок API | Переменные |
+|---|---|---|
+| `oidc` (по умолчанию) | `Authorization: Bearer …` | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, токены OAuth |
+| `authenticate_v3` | `DiadocAuth ddauth_api_client_id=…,ddauth_token=…` | `DD_AUTH`, `AUTH_LOGIN`, `AUTH_PASSWORD` или `DIADOC_LEGACY_TOKEN` |
+
+Пример legacy (устаревший API, только fallback):
+
+```env
+DIADOC_AUTH_MODE=authenticate_v3
+DD_AUTH=ваш-api-client-id
+AUTH_LOGIN=логин
+AUTH_PASSWORD=пароль
+DIADOC_URL=https://diadoc-api-test.kontur.ru
+```
+
+В коде для legacy:
+
+```php
+$api = new DiadocApi($ddAuth, '', $diadocUrl);
+$api->setAuthMode(DiadocApi::AUTH_MODE_AUTHENTICATE_V3);
+$api->authenticateLoginV3($login, $password);
+// или $api->setLegacyToken($готовыйТокен);
+```
+
 ## Конфигурация окружения
 
 Пример в `.env.example`.
 
 Основные переменные:
 
+- `DIADOC_AUTH_MODE` — `oidc` или `authenticate_v3`;
 - `OAUTH_CLIENT_ID` — `client_id` приложения из кабинета интегратора;
 - `OAUTH_CLIENT_SECRET` — `client_secret` приложения;
 - `OAUTH_IDENTITY_URL` — URL identity-провайдера (обычно `https://identity.kontur.ru`);
@@ -84,6 +114,12 @@ echo $orgList->getOrganizations()[0]->getOrgId();
 - `DIADOC_ACCESS_TOKEN`
 - `DIADOC_REFRESH_TOKEN`
 - `DIADOC_ACCESS_EXPIRES_AT` (unix timestamp)
+
+Для `authenticate_v3`:
+
+- `DD_AUTH` — API-ключ (`ddauth_api_client_id`);
+- `AUTH_LOGIN`, `AUTH_PASSWORD` — для `/V3/Authenticate`;
+- `DIADOC_LEGACY_TOKEN` — готовый `ddauth_token` (опционально).
 
 ## Развертывание (локально через Docker)
 

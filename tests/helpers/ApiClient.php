@@ -11,6 +11,11 @@ use Test\enums\ConfigNames;
 class ApiClient
 {
     /**
+     * Срок кеша legacy ddauth-токена (~11 часов, как в старых версиях SDK).
+     */
+    private const LEGACY_TOKEN_CACHE_TTL = 39600;
+
+    /**
      * @var DiadocApi|null
      */
     private $api;
@@ -32,44 +37,155 @@ class ApiClient
         $signedProvider = new OpensslSignerProvider($caFile, $certFile, $keyFile);
 
         if ($this->api === null) {
-            $clientId = getenv(ConfigNames::OAUTH_CLIENT_ID);
-            $clientSecret = getenv(ConfigNames::OAUTH_CLIENT_SECRET);
-            if ($clientId === false || $clientId === '' || $clientSecret === false || $clientSecret === '') {
-                throw new \RuntimeException('В .env должны быть заданы OAUTH_CLIENT_ID и OAUTH_CLIENT_SECRET.');
-            }
-
-            $identityUrl = getenv(ConfigNames::OAUTH_IDENTITY_URL);
-            $identityUrl = $identityUrl !== false && $identityUrl !== '' ? $identityUrl : 'https://identity.kontur.ru';
+            $this->cache = Cache::getCache();
 
             $diadocUrl = getenv(ConfigNames::DIADOC_URL);
             $diadocUrl = ($diadocUrl !== false && $diadocUrl !== '') ? $diadocUrl : 'https://diadoc-api.kontur.ru/';
 
-            $this->api = new DiadocApi(
-                $clientId,
-                $clientSecret,
-                $diadocUrl,
-                $identityUrl,
-                false,
-                $signedProvider
-            );
-            $this->cache = Cache::getCache();
-            $self = $this;
-            $this->api->setOAuthSessionPersistenceCallback(static function (array $session) use ($self) {
-                $cacheExp = time() + 86400 * 30;
-                if (!empty($session['expires_at'])) {
-                    $cacheExp = max($cacheExp, (int) $session['expires_at'] + 7200);
+            $authModeRaw = getenv(ConfigNames::DIADOC_AUTH_MODE);
+            $authMode = $authModeRaw !== false && $authModeRaw !== ''
+                ? strtolower(trim($authModeRaw))
+                : DiadocApi::AUTH_MODE_OIDC;
+
+            if ($authMode === DiadocApi::AUTH_MODE_AUTHENTICATE_V3) {
+                $this->api = $this->createLegacyApi($diadocUrl, $signedProvider);
+            } else {
+                if ($authMode !== DiadocApi::AUTH_MODE_OIDC) {
+                    throw new \RuntimeException(
+                        'Недопустимый DIADOC_AUTH_MODE="' . $authMode . '". '
+                        . 'Допустимо: ' . DiadocApi::AUTH_MODE_OIDC . ' или ' . DiadocApi::AUTH_MODE_AUTHENTICATE_V3 . '.'
+                    );
                 }
-                $self->cache->set(
-                    ConfigNames::DIADOC_OAUTH_CACHE_KEY,
-                    json_encode($session, JSON_UNESCAPED_UNICODE),
-                    $cacheExp
-                );
-            });
+                $this->api = $this->createOidcApi($diadocUrl, $signedProvider);
+            }
         }
 
-        $this->restoreOrLoadOAuthSession();
+        if ($this->api->getAuthMode() === DiadocApi::AUTH_MODE_AUTHENTICATE_V3) {
+            $this->restoreOrLoadLegacySession();
+        } else {
+            $this->restoreOrLoadOAuthSession();
+        }
 
         return $this->api;
+    }
+
+    /**
+     * @param mixed $signedProvider
+     *
+     * @return DiadocApi
+     */
+    private function createOidcApi(string $diadocUrl, $signedProvider)
+    {
+        $clientId = getenv(ConfigNames::OAUTH_CLIENT_ID);
+        $clientSecret = getenv(ConfigNames::OAUTH_CLIENT_SECRET);
+        if ($clientId === false || $clientId === '' || $clientSecret === false || $clientSecret === '') {
+            throw new \RuntimeException(
+                'Режим OIDC (DIADOC_AUTH_MODE=oidc или не задан): в .env нужны OAUTH_CLIENT_ID и OAUTH_CLIENT_SECRET.'
+            );
+        }
+
+        $identityUrl = getenv(ConfigNames::OAUTH_IDENTITY_URL);
+        $identityUrl = $identityUrl !== false && $identityUrl !== '' ? $identityUrl : 'https://identity.kontur.ru';
+
+        $api = new DiadocApi(
+            $clientId,
+            $clientSecret,
+            $diadocUrl,
+            $identityUrl,
+            false,
+            $signedProvider
+        );
+        $api->setAuthMode(DiadocApi::AUTH_MODE_OIDC);
+
+        $self = $this;
+        $api->setOAuthSessionPersistenceCallback(static function (array $session) use ($self) {
+            $cacheExp = time() + 86400 * 30;
+            if (!empty($session['expires_at'])) {
+                $cacheExp = max($cacheExp, (int) $session['expires_at'] + 7200);
+            }
+            $self->cache->set(
+                ConfigNames::DIADOC_OAUTH_CACHE_KEY,
+                json_encode($session, JSON_UNESCAPED_UNICODE),
+                $cacheExp
+            );
+        });
+
+        return $api;
+    }
+
+    /**
+     * @param mixed $signedProvider
+     *
+     * @return DiadocApi
+     */
+    private function createLegacyApi(string $diadocUrl, $signedProvider)
+    {
+        $ddAuth = getenv(ConfigNames::DD_AUTH);
+        if ($ddAuth === false || $ddAuth === '') {
+            throw new \RuntimeException(
+                'Режим authenticate_v3: в .env должен быть задан DD_AUTH (ddauth_api_client_id).'
+            );
+        }
+
+        $identityUrl = getenv(ConfigNames::OAUTH_IDENTITY_URL);
+        $identityUrl = $identityUrl !== false && $identityUrl !== '' ? $identityUrl : 'https://identity.kontur.ru';
+
+        $api = new DiadocApi(
+            $ddAuth,
+            '',
+            $diadocUrl,
+            $identityUrl,
+            false,
+            $signedProvider
+        );
+        $api->setAuthMode(DiadocApi::AUTH_MODE_AUTHENTICATE_V3);
+
+        return $api;
+    }
+
+    private function restoreOrLoadLegacySession(): void
+    {
+        $tokenFromEnv = getenv(ConfigNames::DIADOC_LEGACY_TOKEN);
+        if ($tokenFromEnv !== false && $tokenFromEnv !== '') {
+            $this->api->setLegacyToken($tokenFromEnv);
+
+            return;
+        }
+
+        $cached = $this->cache->get(ConfigNames::DIADOC_LEGACY_CACHE_KEY);
+        if ($cached !== false && is_string($cached) && $cached !== '') {
+            $this->api->setLegacyToken($cached);
+
+            return;
+        }
+
+        $login = getenv(ConfigNames::AUTH_LOGIN);
+        $password = getenv(ConfigNames::AUTH_PASSWORD);
+        if ($login === false || $login === '' || $password === false || $password === '') {
+            throw new \RuntimeException(
+                'Режим authenticate_v3: задайте DIADOC_LEGACY_TOKEN в .env, '
+                . 'либо положите токен в кеш (ключ ' . ConfigNames::DIADOC_LEGACY_CACHE_KEY . '), '
+                . 'либо укажите AUTH_LOGIN и AUTH_PASSWORD для вызова /V3/Authenticate.'
+            );
+        }
+
+        try {
+            $token = $this->api->authenticateLoginV3($login, $password);
+        } catch (\Throwable $e) {
+            throw new \RuntimeException(
+                'authenticate_v3: не удалось получить ddauth_token через /V3/Authenticate: ' . $e->getMessage(),
+                0,
+                $e
+            );
+        }
+
+        if ($token !== '') {
+            $this->cache->set(
+                ConfigNames::DIADOC_LEGACY_CACHE_KEY,
+                $token,
+                time() + self::LEGACY_TOKEN_CACHE_TTL
+            );
+        }
     }
 
     private function restoreOrLoadOAuthSession(): void

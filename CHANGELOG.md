@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 1.1.0
+
+### Added
+
+- Dual auth mode via `DIADOC_AUTH_MODE`:
+  - `oidc` (default) — OpenID Connect, `Authorization: Bearer`;
+  - `authenticate_v3` — legacy `POST /V3/Authenticate`, `DiadocAuth` + `ddauth_token`.
+- `DiadocApi`: `setAuthMode()`, `getAuthMode()`, `authenticateLoginV3()`, `setLegacyToken()`.
+- Test helper `ApiClient` loads legacy token from `DIADOC_LEGACY_TOKEN`, cache (`diadoc_legacy_auth_token`), or login/password.
+- `tests/smoke/live-org.php` prints active auth mode.
+
+### Notes
+
+- `authenticate_v3` is deprecated by Kontur; use only where OIDC is unavailable.
+- OIDC flow unchanged when `DIADOC_AUTH_MODE` is omitted or `oidc`.
+
 ## 1.0.0
 
 ### Breaking changes
